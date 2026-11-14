@@ -1,0 +1,174 @@
+---
+format:
+  gfm
+execute:
+  echo: false
+---
+
+```{r packages}
+#| include: false
+library(tidyverse)
+library(slider)
+```
+
+```{r functions}
+#| include: false
+import <- function(txt) {
+  header <- txt |> 
+    read_lines(n_max = 1) |> 
+    str_split_1(",")|> 
+    str_remove("\\(.*\\)")
+  solves <- txt |>
+    read_delim(
+      delim = ";",
+      skip = 1,
+      col_names = header,
+      col_types = "ffidcfc"
+    ) |> 
+    mutate(
+      Date = as_datetime(Date / 1000, tz = "America/Toronto"),
+      Time = Time |> replace_when(Penalty == 2 ~ NA)
+    )
+}
+
+round_five_up <- function(n) {
+  if (is.na(n)) {
+    n
+  } else if (n %% 10 == 5) { # (remainder) is the ones place a 5
+    (n %/% 10 + 1) * 10 # (quotient) manually adding 1 to round up
+  } else {
+    round(n, -1)
+  }
+}
+
+.ao <- function(times) {
+  DNFs <- sum(is.na(times))
+  if (DNFs > 1) {
+    return(NA)
+  } else if (DNFs == 1) {
+    mean(
+      times[-which.min(times)], 
+      na.rm = TRUE
+    )
+  } else {
+    mean(
+      times[-c(which.min(times), which.max(times))]
+    )
+  }
+}
+
+ao5 <- function(data) {
+  data |> 
+    mutate(
+      ao5 = Solve_Time |> 
+        slide_dbl(.ao, .before = 4, .complete = TRUE) |> 
+        round(-1) |> as.integer()
+    )
+}
+
+ao12 <- function(data) {
+  data |> 
+    mutate(
+      ao12 = Solve_Time |> 
+        slide_dbl(.ao, .before = 11, .complete = TRUE) |> 
+        map_int(round_five_up)
+    )
+}
+
+.ao100 <- function(times) {
+  NAs <- is.na(times)
+  DNFs <- sum(NAs)
+  if (DNFs > 5) {
+    return(NA)
+  } else if (DNFs > 0) {
+    times[NAs] <- Inf 
+  }
+  times[-c(kit::topn(times, 5, decreasing = FALSE), kit::topn(times, 5))] |>
+      sum() / 90
+}
+
+ao100 <- function(data) {
+  data |> 
+    mutate(
+      ao100 = Solve_Time |> 
+        slide_dbl(.ao100, .before = 99, .complete = TRUE) |> 
+        map_int(round_five_up)
+    )
+}
+
+.ao1000 <- function(times) {
+  NAs <- is.na(times)
+  DNFs <- sum(NAs)
+  if (DNFs > 50) {
+    return(NA)
+  } else if (DNFs > 0) {
+    times[NAs] <- Inf 
+  }
+  times[-c(kit::topn(times, 50, decreasing = FALSE), kit::topn(times, 50))] |>
+    sum() / 900
+}
+
+ao1000 <- function(data) {
+  data |> 
+    mutate(
+      ao1000 = Solve_Time |> 
+        slide_dbl(.ao1000, .before = 999, .complete = TRUE) |> 
+        map_int(round_five_up)
+    )
+}
+```
+
+```{r data}
+#| include: false
+solves_ <- import(".data/Backup_2026-11-12_17-12.txt")
+
+solves <- solves_ |>
+  filter(Puzzle == "333", Category == "main") |> 
+  select(-c(Puzzle, Category, Comment)) |> 
+  rename("Solve_Time" = "Time") |> 
+  rowid_to_column("Solve_Number")
+
+solves <- solves |> 
+  ao5() |>
+  ao12() |> 
+  ao100() |> 
+  ao1000()
+```
+
+```{r personal-bests}
+PBs <- c("Solve_Time", "ao5", "ao12", "ao100", "ao1000") |> 
+  map(\(field) {
+    solves |> 
+      slice_min(.data[[field]], with_ties = FALSE) |> 
+      mutate(Type = field) |> 
+      rename(Time = all_of(field)) |> 
+      select(Type, Time, Date)
+  }) |>
+  list_rbind() |> 
+  mutate(
+    Type = Type |> replace_when(Type == "Solve_Time" ~ "single"),
+    Time = Time / 1000,
+    Date = date(Date)
+  )
+
+PBs |>
+  knitr::kable(align = "ccc")
+```
+
+```{r plot-1}
+times_up_to_60 <- solves |> 
+  select(Solve_Time) |> 
+  drop_na() |> 
+  mutate(Solve_Time = floor(Solve_Time / 1000)) |> 
+  count(Solve_Time) |>
+  filter_out(Solve_Time > 60)
+
+times_up_to_60 |> 
+  ggplot(aes(x = Solve_Time, y = n, fill = n, label = Solve_Time)) +
+  geom_col() +
+  geom_text(vjust = -0.5, size = 2.5) +
+  scale_y_continuous(breaks = seq(200, 1000, 200)) +
+  scale_fill_viridis_c(guide = "none") +
+  labs(x = "Time", y = "Count") +
+  theme_classic()
+```
